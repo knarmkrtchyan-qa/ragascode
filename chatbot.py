@@ -1,19 +1,29 @@
+# ----------------------------
+# Rich library for pretty printing
+# ----------------------------
 from rich import print
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
-from embeddings import load_or_create_embeddings
-from pipeline import RAGPipeline
+# ----------------------------
+# Project-specific imports
+# ----------------------------
+from embeddings import load_or_create_embeddings  # function to load or generate text embeddings
+from pipeline import RAGPipeline  # custom RAG pipeline for querying with context
 import os
-from config import OPENAI_API_KEY
-import pandas as pd  # ✅ required for DataFrame handling
+import pandas as pd  # required for handling evaluation results as DataFrame
 
-# ⚠️ If you want to use RAGAS with OpenAI, set OPENAI_API_KEY
-os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
+# ----------------------------
+# Gemini imports
+# ----------------------------
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from ragas.llms import LangchainLLMWrapper  # wrapper so RAGAS can use Gemini
 
-# --- NEW: RAGAS imports ---
-from datasets import Dataset
+# ----------------------------
+# RAGAS evaluation imports
+# ----------------------------
+from datasets import Dataset  # HuggingFace Dataset format required by RAGAS
 from ragas.metrics import (
     context_precision,
     context_recall,
@@ -21,37 +31,58 @@ from ragas.metrics import (
     AnswerRelevancy,
     AnswerCorrectness,
 )
-from ragas import evaluate
+from ragas import evaluate  # main function to run RAGAS evaluation
 
+# ----------------------------
+# Setup Gemini API Key
+# ----------------------------
+from config import API_KEY  
+os.environ["GOOGLE_API_KEY"] = API_KEY  
 
 # ----------------------------
 # Load dataset with embeddings
 # ----------------------------
-print("[bold cyan]Loading dataset with embeddings...[/bold cyan]")
-dataset = load_or_create_embeddings()
-pipeline = RAGPipeline(dataset)
+dataset = load_or_create_embeddings()  # returns dataset containing text and embeddings
+pipeline = RAGPipeline(dataset)        # initializes retrieval-augmented generation pipeline
 
 # ----------------------------
-# Start Chat Interface
+# Setup Gemini as evaluator
 # ----------------------------
-print("\n[bold green]Welcome to your Gemini RAGA Chatbot![/bold green]")
+gemini_llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro")
+wrapped_llm = LangchainLLMWrapper(gemini_llm)
+
+# Setup Gemini embeddings for RAGAS
+gemini_embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+
+# Attach Gemini LLM to built-in metrics
+context_precision.llm = wrapped_llm
+context_recall.llm = wrapped_llm
+faithfulness.llm = wrapped_llm
+
+# ----------------------------
+# Start interactive chat
+# ----------------------------
+print("\n[bold green]Welcome to your Gemini RAG Chatbot![/bold green]")
 print("[dim]Type 'exit' to quit.[/dim]\n")
 
 while True:
+    # Prompt user for input
     user_input = Prompt.ask("[bold blue]Your question[/bold blue]")
 
     if user_input.strip().lower() == "exit":
         print("[bold yellow]Goodbye![/bold yellow]")
         break
 
-    # Run the pipeline
+    # ----------------------------
+    # Run RAG pipeline
+    # ----------------------------
     result = pipeline.run(user_input, top_k=3)
 
-    # Display the generated answer
+    # Display generated answer in a Rich panel
     print(Panel(f"[white]{result['answer']}[/white]", title="[bold green]Answer[/bold green]"))
 
     # ----------------------------
-    # NEW EVALUATION WITH RAGAS
+    # Prepare data for RAGAS evaluation
     # ----------------------------
     eval_data = {
         "question": [result["question"]],
@@ -59,37 +90,48 @@ while True:
         "answer": [result["answer"]],
     }
 
-   # Add reference (ground truth) if available
+    # Optionally add reference (ground truth) if available
     reference = ""
     for ctx in result["contexts"]:
         if "ground_truth" in ctx and ctx["ground_truth"].strip():
             reference = ctx["ground_truth"]
-        break   # take the first valid ground truth
+            break  # take the first valid ground truth
     eval_data["reference"] = [reference]
 
-    # Convert to HuggingFace Dataset
+    # Convert dictionary to HuggingFace Dataset for RAGAS
     ragas_dataset = Dataset.from_dict(eval_data)
 
-    # Run RAGAS evaluation
+    # ----------------------------
+    # Run automatic evaluation using RAGAS with Gemini
+    # ----------------------------
+    answer_relevancy = AnswerRelevancy(llm=wrapped_llm)
+    answer_correctness = AnswerCorrectness(llm=wrapped_llm)
+
     ragas_results = evaluate(
         ragas_dataset,
         metrics=[
             context_precision,
             context_recall,
             faithfulness,
-            AnswerRelevancy(),
-            AnswerCorrectness(),
+            answer_relevancy,
+            answer_correctness,
         ],
+        embeddings=gemini_embeddings,   # prevent OpenAI fallback
     )
 
-    # Convert results to Pandas DataFrame
+    # Convert evaluation results to Pandas DataFrame
     results_df = ragas_results.to_pandas()
 
-    # Save results for debugging
+    # Save evaluation logs for debugging or analysis
     results_df.to_csv("ragas_eval_log.csv", index=False)
 
     # ----------------------------
-    # Display clean Rich table
+    # Display evaluation legend
+    # ----------------------------
+    print("\n[bold cyan]Note: 1.000 means fully correct/relevant; 0 means incorrect/irrelevant.[/bold cyan]\n")
+
+    # ----------------------------
+    # Display evaluation results in a clean Rich table
     # ----------------------------
     ragas_table = Table(
         title=f"RAGAS Evaluation for: {user_input}",

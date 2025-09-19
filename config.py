@@ -1,5 +1,6 @@
-API_KEY = "AIzaSyCuG2JKE1Vr_TXhCbDu4o0sVdwfje_xgGo"  # replace with your key
-OPENAI_API_KEY = "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"
+#API keys
+API_KEY = "AIzaSyCuG2JKE1Vr_TXhCbDu4o0sVdwfje_xgGo" 
+#OPENAI_API_KEY = "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"
 
 
 # Models
